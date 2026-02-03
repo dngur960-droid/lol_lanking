@@ -433,3 +433,13 @@
 .loader {
     text-align: center;
 }
+
+.errorMessage {
+    background: rgba(218, 54, 51, 0.1);
+    border: 1px solid rgba(218, 54, 51, 0.2);
+    color: #f85149;
+    padding: 20px;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
