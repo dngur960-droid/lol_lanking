@@ -171,8 +171,9 @@ export default function Home() {
     };
 
     const openModal = async (player) => {
-        if (player.error && !player.puuid) return;
         setSelectedPlayer(player);
+        if (player.error) return; // 전적 조회는 패스하지만 팝업은 띄움
+
         setModalLoading(true);
         try {
             const res = await fetch(`/api/match-history?name=${encodeURIComponent(player.name)}&tag=${encodeURIComponent(player.tag)}`);
@@ -281,8 +282,14 @@ export default function Home() {
                             <button className={styles.closeButton} onClick={() => setSelectedPlayer(null)}>×</button>
                         </div>
                         <div className={styles.modalBody}>
-                            <p className={styles.historyTitle}>최근 경기 결과</p>
-                            {modalLoading ? <div className={styles.modalLoader}>데이터 분석 중...</div> : (
+                            <p className={styles.historyTitle}>데이터 상태</p>
+                            {selectedPlayer.error ? (
+                                <div className={styles.errorMessage}>
+                                    ⚠️ 조회 실패 이유: {selectedPlayer.errorMsg || '알 수 없는 에러'}
+                                    <br /><br />
+                                    <small>Vercel 환경 변수(RIOT_API_KEY) 설정을 확인해 주세요.</small>
+                                </div>
+                            ) : modalLoading ? <div className={styles.modalLoader}>데이터 분석 중...</div> : (
                                 <div className={styles.matchList}>
                                     {selectedPlayer.matchHistory && selectedPlayer.matchHistory.length > 0 ? (
                                         selectedPlayer.matchHistory.map(m => (
