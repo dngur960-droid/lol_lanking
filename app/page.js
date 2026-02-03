@@ -39,36 +39,44 @@ const INITIAL_MEMBERS = [
     { name: '김깨갱', tag: 'KR1' }, { name: '김목마', tag: 'KR1' }
 ];
 
-const CACHE_KEY = 'control_members_cache_v2';
-const CACHE_TIME_KEY = 'control_members_cache_time_v2';
-
 export default function Home() {
     const [members, setMembers] = useState([]);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [progress, setProgress] = useState(0);
     const [lastUpdated, setLastUpdated] = useState(null);
     const [selectedPlayer, setSelectedPlayer] = useState(null);
     const [modalLoading, setModalLoading] = useState(false);
     const [currentLoadingName, setCurrentLoadingName] = useState('');
 
-    // 로딩 중단 여부를 제어하기 위한 ref
     const abortRef = useRef(false);
 
     useEffect(() => {
-        const savedData = localStorage.getItem(CACHE_KEY);
-        const savedTime = localStorage.getItem(CACHE_TIME_KEY);
-        if (savedData) {
-            const parsed = JSON.parse(savedData);
-            setMembers(sortAndRankMembers(parsed));
-            setLastUpdated(savedTime);
-        } else {
-            fetchAllMembers();
+        // 초대형 업그레이드: 서버 고용 저장소(KV)에서 데이터를 먼저 가져옵니다.
+        async function loadSharedData() {
+            setLoading(true);
+            try {
+                const res = await fetch('/api/kv');
+                const data = await res.json();
+                if (data.members && data.members.length > 0) {
+                    setMembers(sortAndRankMembers(data.members));
+                    setLastUpdated(data.lastUpdated);
+                } else {
+                    // 서버에 데이터가 아예 없는 경우 첫 갱신 유도
+                    fetchAllMembers();
+                }
+            } catch (e) {
+                console.error('KV 로드 실패:', e);
+            } finally {
+                setLoading(false);
+            }
         }
+        loadSharedData();
         return () => { abortRef.current = true; };
     }, []);
 
     const sortAndRankMembers = (dataList) => {
-        return dataList
+        return [...dataList]
             .map(r => ({
                 ...r,
                 sortValue: getSortValue(r.tier || 'UNRANKED', r.rank || '', r.lp || 0, !!r.error)
@@ -81,18 +89,16 @@ export default function Home() {
     };
 
     const fetchAllMembers = async () => {
-        if (loading) return;
-        setLoading(true);
+        if (isRefreshing) return;
+        setIsRefreshing(true);
         setProgress(0);
         abortRef.current = false;
 
-        // 기존 데이터 복사 (업데이트 실패 시 유지용)
         const currentDataMap = new Map();
         members.forEach(m => currentDataMap.set(`${m.name}#${m.tag}`, m));
 
         const updatedData = [];
 
-        // 98명을 루프 돌며 하나씩 정밀하게 업데이트
         for (let i = 0; i < INITIAL_MEMBERS.length; i++) {
             if (abortRef.current) break;
 
@@ -104,8 +110,6 @@ export default function Home() {
                 const data = await res.json();
 
                 if (data.error) {
-                    console.warn(`[FETCH FAIL] ${m.name}: ${data.error}`);
-                    // 에러 발생 시 기존 데이터가 있다면 그것을 유지, 없으면 에러 객체 생성
                     const existing = currentDataMap.get(`${m.name}#${m.tag}`);
                     updatedData.push(existing || { ...m, error: true, errorMsg: data.error });
                 } else {
@@ -119,11 +123,9 @@ export default function Home() {
             const currentProgress = Math.round(((i + 1) / INITIAL_MEMBERS.length) * 100);
             setProgress(currentProgress);
 
-            // 실시간으로 리스트 업데이트 (사용자 경험 개선)
+            // 실시간 리마인드
             setMembers(sortAndRankMembers([...updatedData, ...INITIAL_MEMBERS.slice(i + 1).map(rem => currentDataMap.get(`${rem.name}#${rem.tag}`) || rem)]));
 
-            // 라이엇 API 100/2min 제한(1.2초당 1회꼴)을 피하기 위해 안전한 지연 시간 추가
-            // 한 명당 API 3개 쓰므로 1인당 최소 4초 간격이 가장 안전함
             if (i < INITIAL_MEMBERS.length - 1) {
                 await new Promise(resolve => setTimeout(resolve, i % 5 === 0 ? 5000 : 3500));
             }
@@ -132,11 +134,20 @@ export default function Home() {
         if (!abortRef.current) {
             const now = new Date().toLocaleString();
             setLastUpdated(now);
-            localStorage.setItem(CACHE_KEY, JSON.stringify(updatedData));
-            localStorage.setItem(CACHE_TIME_KEY, now);
+
+            // 핵심: 갱신이 끝나면 서버 공용 저장소(KV)에 저장하여 모두와 공유합니다.
+            try {
+                await fetch('/api/kv', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ members: updatedData, lastUpdated: now })
+                });
+            } catch (e) {
+                console.error('KV 저장 실패:', e);
+            }
         }
 
-        setLoading(false);
+        setIsRefreshing(false);
         setCurrentLoadingName('');
     };
 
@@ -176,6 +187,15 @@ export default function Home() {
         }
     };
 
+    if (loading && members.length === 0) {
+        return (
+            <div className={styles.container} style={{ height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column' }}>
+                <h1 className={styles.logo}>CONTROL</h1>
+                <p>전적 데이터를 서버에서 가져오는 중입니다...</p>
+            </div>
+        );
+    }
+
     const topMembers = members.filter(m => m.overallRank && m.overallRank <= 3).slice(0, 3);
     const sortedHero = topMembers.length >= 3 ? [topMembers[1], topMembers[0], topMembers[2]] : topMembers;
 
@@ -185,28 +205,27 @@ export default function Home() {
                 <div className={styles.headerContent}>
                     <div>
                         <h1 className={styles.logo}>CONTROL</h1>
-                        <p className={styles.subtitle}>LoL Group Ranking (98 Members)</p>
+                        <p className={styles.subtitle}>LoL Group Ranking (Shared)</p>
                     </div>
                     <div className={styles.updateInfo}>
-                        {lastUpdated && <span>최종 업데이트: {lastUpdated}</span>}
+                        {lastUpdated && <span>최종 동기화: {lastUpdated}</span>}
                         <button
-                            className={`${styles.refreshButton} ${loading ? styles.spinning : ''}`}
+                            className={`${styles.refreshButton} ${isRefreshing ? styles.spinning : ''}`}
                             onClick={fetchAllMembers}
-                            disabled={loading}
+                            disabled={isRefreshing}
                         >
-                            {loading ? '동기화 중...' : '전체 전적 갱신'}
+                            {isRefreshing ? '데이터 수집 중...' : '실시간 전적 갱신'}
                         </button>
                     </div>
                 </div>
-                {loading && (
+                {isRefreshing && (
                     <div className={styles.loadingBarContainer}>
                         <div className={styles.progressBarBg}>
                             <div className={styles.progressBarFill} style={{ width: `${progress}%` }} />
                         </div>
                         <p className={styles.progressText}>
-                            [{currentLoadingName}] 정보를 불러오는 중... ({progress}%)
+                            {currentLoadingName} 갱신 중... ({progress}%)
                         </p>
-                        <p className={styles.loadingAdvice}>라이엇 API 정책에 따라 1인당 약 4초가 소요됩니다 (전체 약 6분)</p>
                     </div>
                 )}
             </header>
